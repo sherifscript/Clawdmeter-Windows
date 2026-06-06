@@ -1,0 +1,32 @@
+Clawdmeter-Windows
+==================
+
+The MIT License (see LICENSE) covers the SOURCE CODE in this repository.
+
+It does NOT cover the bundled artwork. The following are excluded from the MIT
+License and are included only for use with this application:
+
+  * The Clawd mascot sprites and related artwork — assets/sprites/ and
+    assets/_splash_animations.h. The Clawd mascot is (c) Anthropic PBC and
+    remains Anthropic's property. The pixel-art rendition originates from
+    https://claudepix.vercel.app (see assets/sprites/manifest.json). These
+    assets are included under the same "gray area" as the upstream project and
+    are NOT licensed for reuse. If you fork or redistribute, you are
+    responsible for your own use of them.
+
+Attribution
+-----------
+
+  * Original project — concept, firmware, and daemon by Hermann Bjorgvin
+    (@HermannBjorgvin): https://github.com/HermannBjorgvin/Clawdmeter.
+    Clawdmeter-Windows is a software-only Windows port of that work.
+  * Clawd pixel art — https://claudepix.vercel.app
+  * Clawd mascot — (c) Anthropic PBC.
+
+Disclaimer
+----------
+
+This is an unofficial, independent project. It is NOT affiliated with,
+endorsed by, or sponsored by Anthropic. "Claude", "Clawd", and "Anthropic" are
+trademarks of Anthropic PBC, used here for descriptive/identification purposes
+only.

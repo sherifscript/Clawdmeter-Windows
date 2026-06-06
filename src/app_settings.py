@@ -1,0 +1,47 @@
+"""Persistent app settings. QSettings on Windows writes to HKCU\\Software\\Clawdmeter."""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QSettings
+
+ORG = "Clawdmeter"
+APP = "Clawdmeter"
+
+KEY_CRED_PATH = "credentials/path"
+KEY_ALWAYS_ON_TOP = "window/always_on_top"
+KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
+
+
+def _settings() -> QSettings:
+    return QSettings(ORG, APP)
+
+
+def get_credentials_override() -> str:
+    v = _settings().value(KEY_CRED_PATH, "")
+    return str(v) if v else ""
+
+
+def set_credentials_override(path: str) -> None:
+    _settings().setValue(KEY_CRED_PATH, path or "")
+
+
+def get_always_on_top() -> bool:
+    v = _settings().value(KEY_ALWAYS_ON_TOP, False)
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_always_on_top(on: bool) -> None:
+    _settings().setValue(KEY_ALWAYS_ON_TOP, bool(on))
+
+
+def get_auto_hide_titlebar() -> bool:
+    v = _settings().value(KEY_AUTO_HIDE_TITLEBAR, False)
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_auto_hide_titlebar(on: bool) -> None:
+    _settings().setValue(KEY_AUTO_HIDE_TITLEBAR, bool(on))
