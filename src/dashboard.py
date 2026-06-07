@@ -101,6 +101,7 @@ QPushButton {
     padding: 6px 12px; border-radius: 6px;
 }
 QPushButton:hover { background-color: #374151; }
+QPushButton:disabled { background-color: #161b22; color: #4b5563; border-color: #21262d; }
 
 QProgressBar {
     background-color: #1f2937; border: 1px solid #374151; border-radius: 0px;
@@ -443,17 +444,33 @@ class SettingsPanel(QWidget):
             self.cred_reset_btn.hide()
 
     def refresh_token_status(self) -> None:
-        """Show current access-token validity from the credentials file."""
-        exp = token_refresh.token_expiry_ms(credentials_path())
+        """Show access-token validity; enable manual refresh only when it's
+        actually needed (expired / near expiry) so a valid token can't be
+        needlessly refreshed into a rate-limit error."""
+        path = credentials_path()
+        exp = token_refresh.token_expiry_ms(path)
+        needs_refresh = token_refresh.is_expired(path)
+        self.refresh_token_btn.setEnabled(needs_refresh)
+        if needs_refresh:
+            self.refresh_token_btn.setText("Refresh token now")
+            self.refresh_token_btn.setToolTip("")
+        else:
+            self.refresh_token_btn.setText("Token valid — refresh disabled")
+            self.refresh_token_btn.setToolTip(
+                "Disabled because your token is still valid — it refreshes "
+                "automatically when it expires."
+            )
         if exp is None:
             self.token_status.setText("Token expiry unknown.")
             return
         secs = exp / 1000 - time.time()
         if secs <= 0:
-            self.token_status.setText("Token expired — will auto-refresh, or refresh now.")
+            self.token_status.setText("Token expired — refresh now, or wait for auto-refresh.")
+        elif needs_refresh:
+            self.token_status.setText("Token expiring — refresh now, or wait for auto-refresh.")
         else:
             h, m = int(secs // 3600), int((secs % 3600) // 60)
-            self.token_status.setText(f"Token valid for ~{h}h {m}m.")
+            self.token_status.setText(f"Valid for ~{h}h {m}m — refreshes automatically.")
 
     def set_token_status(self, text: str) -> None:
         self.token_status.setText(text)
