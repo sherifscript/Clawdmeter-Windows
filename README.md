@@ -4,7 +4,10 @@ Standalone Windows desktop dashboard for Claude Code usage. A software-only
 port of [HermannBjorgvin/Clawdmeter](https://github.com/HermannBjorgvin/Clawdmeter)
 — the same metrics, the same 60-second poll, no ESP32 hardware.
 
-![Clawdmeter-Windows showing session and weekly usage with the Clawd mascot](assets/Screenshot-1.png)
+<p align="center">
+  <img src="assets/ClawdMeter.gif" width="420"
+       alt="Clawdmeter-Windows — the Clawd mascot reacting live to Claude Code activity, with session and weekly usage">
+</p>
 
 ## What it shows
 
