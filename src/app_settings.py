@@ -17,6 +17,8 @@ KEY_AUTO_REFRESH = "token/auto_refresh"
 KEY_RESET_NOTIFY = "notify/reset_enabled"
 KEY_RESET_NOTIFY_SOUND = "notify/reset_sound"
 KEY_RESET_NOTIFY_POPUP = "notify/reset_popup"
+KEY_RESET_NOTIFY_PUSH = "notify/reset_push"
+KEY_RESET_NOTIFY_PUSH_TOPIC = "notify/reset_push_topic"
 
 
 def _settings() -> QSettings:
@@ -123,3 +125,23 @@ def get_reset_notify_popup() -> bool:
 
 def set_reset_notify_popup(on: bool) -> None:
     _settings().setValue(KEY_RESET_NOTIFY_POPUP, bool(on))
+
+
+def get_reset_notify_push() -> bool:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH, False)  # off until a topic is set
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_reset_notify_push(on: bool) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH, bool(on))
+
+
+def get_reset_notify_push_topic() -> str:
+    v = _settings().value(KEY_RESET_NOTIFY_PUSH_TOPIC, "")
+    return str(v) if v else ""
+
+
+def set_reset_notify_push_topic(topic: str) -> None:
+    _settings().setValue(KEY_RESET_NOTIFY_PUSH_TOPIC, (topic or "").strip())

@@ -112,8 +112,12 @@ Open the settings panel from the gear icon in the title bar.
 - **Notifications** — **Notify on limit reset** pings you the moment a usage
   limit resets so you know you can resume — but only when you were actually near
   the limit (or already throttled), so it stays quiet otherwise. It shows a tray
-  notification and briefly flashes the tray icon; **Play a sound** and **Pop the
-  window to front** are optional extras you can switch off.
+  notification and briefly flashes the tray icon; **Play a sound**, **Pop the
+  window to front**, and **Send a push to my phone (ntfy)** are optional extras
+  you can switch off. The phone push posts to an [ntfy](https://ntfy.sh) topic
+  of your choosing (no account or API key) — subscribe to the same topic in the
+  ntfy mobile app to get the reset alert on your phone; pick a long, hard-to-guess
+  topic since anyone who knows it can read your alerts.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 

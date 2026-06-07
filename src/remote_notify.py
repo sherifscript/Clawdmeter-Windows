@@ -1,0 +1,64 @@
+"""Send a usage-limit-reset push to your phone via ntfy (https://ntfy.sh).
+
+This is the optional "ping my phone" companion to the local reset toast. It's a
+single HTTPS POST to an ntfy topic, so no new dependency is needed — httpx
+already ships with the app — and there's no account or API key: you pick a
+hard-to-guess topic name, subscribe to it in the ntfy mobile app, and put the
+same string in Settings here.
+
+This module stays Qt-free and does the network call itself; the dashboard runs
+it off the UI thread. URL building is split out (resolve_url) so it can be
+tested without touching the network.
+"""
+
+from __future__ import annotations
+
+DEFAULT_SERVER = "https://ntfy.sh"
+
+
+def resolve_url(topic: str, server: str = DEFAULT_SERVER) -> str:
+    """Map a topic (or a full ntfy URL) to the endpoint to POST to.
+
+    A bare topic like "clawd-nick-7f3a" is appended to the default server; a
+    value that already looks like a URL is used as-is, so self-hosted ntfy
+    servers work too. Raises ValueError on an empty topic.
+    """
+    topic = (topic or "").strip()
+    if not topic:
+        raise ValueError("ntfy topic is empty")
+    if topic.startswith(("http://", "https://")):
+        return topic.rstrip("/")
+    return f"{server.rstrip('/')}/{topic.strip('/')}"
+
+
+def send_ntfy(
+    topic: str,
+    title: str,
+    body: str,
+    *,
+    server: str = DEFAULT_SERVER,
+    timeout: float = 10.0,
+) -> tuple[bool, str]:
+    """POST a notification to an ntfy topic. Returns (ok, message).
+
+    Network, HTTP and config errors are caught and reported rather than raised,
+    so a flaky phone push never disrupts the local notification path.
+    """
+    try:
+        url = resolve_url(topic, server)
+    except ValueError as exc:
+        return False, str(exc)
+
+    # Lazy import mirrors token_refresh — keeps this module importable in tests
+    # without httpx, and Qt-free at import time.
+    import httpx
+
+    # Title goes in a header (ASCII-safe); the message body is the POST content.
+    headers = {"Title": title, "Priority": "default", "Tags": "bell"}
+    try:
+        with httpx.Client(timeout=timeout) as http:
+            resp = http.post(url, content=body.encode("utf-8"), headers=headers)
+            resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        return False, f"ntfy push failed: {exc}"
+    return True, "sent"

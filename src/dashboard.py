@@ -8,6 +8,7 @@ slide-in settings panel on the right.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -57,6 +59,7 @@ import token_refresh
 import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
+import remote_notify
 from reset_notify import ResetNotifier
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
@@ -573,6 +576,28 @@ class SettingsPanel(QWidget):
         self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
         self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
         layout.addWidget(self.notify_popup_check)
+
+        self.notify_push_check = QCheckBox("    Send a push to my phone (ntfy)")
+        self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
+        self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
+        layout.addWidget(self.notify_push_check)
+
+        self.notify_push_topic = QLineEdit()
+        self.notify_push_topic.setPlaceholderText(
+            "ntfy topic (e.g. clawd-nick-7f3a) or full URL"
+        )
+        self.notify_push_topic.setText(app_settings.get_reset_notify_push_topic())
+        self.notify_push_topic.editingFinished.connect(self._on_notify_push_topic_changed)
+        layout.addWidget(self.notify_push_topic)
+
+        push_hint = QLabel(
+            "Subscribe to the same topic in the ntfy app (Android/iOS) to get "
+            "the reset alert on your phone. Pick a long, hard-to-guess topic — "
+            "anyone who knows it can read your alerts.",
+            objectName="sectionHint",
+        )
+        push_hint.setWordWrap(True)
+        layout.addWidget(push_hint)
         self._sync_notify_subtoggles()
 
         layout.addSpacing(10)
@@ -683,11 +708,21 @@ class SettingsPanel(QWidget):
     def _on_notify_popup_toggled(self, checked: bool) -> None:
         app_settings.set_reset_notify_popup(checked)
 
+    def _on_notify_push_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_push(checked)
+        self._sync_notify_subtoggles()
+
+    def _on_notify_push_topic_changed(self) -> None:
+        app_settings.set_reset_notify_push_topic(self.notify_push_topic.text())
+
     def _sync_notify_subtoggles(self) -> None:
         """Grey out the per-method sub-toggles when the master switch is off."""
         on = self.notify_check.isChecked()
         self.notify_sound_check.setEnabled(on)
         self.notify_popup_check.setEnabled(on)
+        self.notify_push_check.setEnabled(on)
+        # The topic only matters when push is both available and turned on.
+        self.notify_push_topic.setEnabled(on and self.notify_push_check.isChecked())
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
@@ -1196,6 +1231,21 @@ class Dashboard(QMainWindow):
             QApplication.beep()
         if app_settings.get_reset_notify_popup():
             self._show_window()
+        if app_settings.get_reset_notify_push():
+            self._send_push(title, body)
+
+    def _send_push(self, title: str, body: str) -> None:
+        """Fire the ntfy phone push off the UI thread; a failure is logged, not raised."""
+        topic = app_settings.get_reset_notify_push_topic()
+        if not topic:
+            return
+
+        def worker() -> None:
+            ok, msg = remote_notify.send_ntfy(topic, title, body)
+            if not ok:
+                print(f"[clawdmeter] {msg}")
+
+        threading.Thread(target=worker, name="ntfy-push", daemon=True).start()
 
     def _start_tray_flash(self, cycles: int = 6) -> None:
         if self._flash_timer.isActive():  # already flashing — just extend it
