@@ -88,9 +88,17 @@ Open the settings panel from the gear icon in the title bar.
 - **Credentials** — by default the app reads `~/.claude/.credentials.json`. Use
   **Use alternative credentials** (or set `CLAUDE_CREDENTIALS_PATH`) to point at
   a non-default `.credentials.json`.
-- **Window** — toggle **Always on top** and **Auto-hide title bar**.
+- **Token (beta)** — Claude's OAuth access token expires roughly every 8 hours,
+  which would otherwise blank the dashboard. With **Auto-refresh when expired**
+  on (the default), the app mints a fresh token automatically so it stays live.
+  The **Refresh token now** button is a manual override and is enabled only when
+  the token is actually expired.
+- **Window** — toggle **Always on top**, **Auto-hide title bar**, and **Quit on
+  close** (closes the app instead of minimizing to the tray).
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
+
+The panel scrolls if the window is too short to fit every section.
 
 ## Credit
 
