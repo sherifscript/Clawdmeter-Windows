@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSystemTrayIcon,
     QToolButton,
     QVBoxLayout,
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
 
 import app_settings
 import start_menu
+import token_refresh
 import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
@@ -112,6 +114,12 @@ QWidget#settingsPanel {
     background-color: #0a0d12;
     border-left: 1px solid #1f2937;
 }
+QScrollArea#settingsScroll, QWidget#settingsBody { background: transparent; border: none; }
+QScrollBar:vertical { background: transparent; width: 8px; margin: 2px 0; }
+QScrollBar::handle:vertical { background: #374151; border-radius: 4px; min-height: 24px; }
+QScrollBar::handle:vertical:hover { background: #4b5563; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QLabel#settingsTitle {
     font-size: 16px; font-weight: 700; color: #e6edf3; letter-spacing: 2px;
 }
@@ -308,7 +316,8 @@ class SettingsPanel(QWidget):
     WIDTH = 280
     ANIM_MS = 220
 
-    def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested) -> None:
+    def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
+                 on_refresh_token=None, on_auto_refresh_changed=None) -> None:
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
@@ -316,13 +325,18 @@ class SettingsPanel(QWidget):
         self._on_aot_changed = on_always_on_top_changed
         self._on_auto_hide_changed = on_auto_hide_changed
         self._on_close_requested = on_close_requested
+        self._on_refresh_token = on_refresh_token
+        self._on_auto_refresh_changed = on_auto_refresh_changed
         self.hide()
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        header = QHBoxLayout()
+        # Fixed header (stays put while the body scrolls).
+        header_w = QWidget()
+        header = QHBoxLayout(header_w)
+        header.setContentsMargins(20, 18, 20, 8)
         title = QLabel("SETTINGS", objectName="settingsTitle")
         close = QToolButton()
         close.setObjectName("titleBtn")
@@ -333,9 +347,24 @@ class SettingsPanel(QWidget):
         header.addWidget(title)
         header.addStretch(1)
         header.addWidget(close)
-        layout.addLayout(header)
+        outer.addWidget(header_w)
 
-        layout.addSpacing(6)
+        # Scrollable body — settings grow without clipping or cramping.
+        scroll = QScrollArea()
+        scroll.setObjectName("settingsScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.viewport().setStyleSheet("background: transparent;")
+        outer.addWidget(scroll, 1)
+
+        body = QWidget()
+        body.setObjectName("settingsBody")
+        scroll.setWidget(body)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(20, 6, 20, 18)
+        layout.setSpacing(12)
+
         layout.addWidget(QLabel("CREDENTIALS", objectName="sectionLabel"))
         self.cred_btn = QPushButton("Use alternative credentials")
         self.cred_btn.clicked.connect(self._choose_credentials)
@@ -355,6 +384,20 @@ class SettingsPanel(QWidget):
         self._refresh_cred_status()
 
         layout.addSpacing(10)
+        layout.addWidget(QLabel("TOKEN  (beta)", objectName="sectionLabel"))
+        self.token_status = QLabel(objectName="sectionHint")
+        self.token_status.setWordWrap(True)
+        layout.addWidget(self.token_status)
+        self.auto_refresh_check = QCheckBox("Auto-refresh when expired")
+        self.auto_refresh_check.setChecked(app_settings.get_auto_refresh())
+        self.auto_refresh_check.toggled.connect(self._on_auto_refresh_toggled)
+        layout.addWidget(self.auto_refresh_check)
+        self.refresh_token_btn = QPushButton("Refresh token now")
+        self.refresh_token_btn.clicked.connect(self._on_refresh_token_clicked)
+        layout.addWidget(self.refresh_token_btn)
+        self.refresh_token_status()
+
+        layout.addSpacing(10)
         layout.addWidget(QLabel("WINDOW", objectName="sectionLabel"))
         self.aot_check = QCheckBox("Always on top")
         self.aot_check.setChecked(app_settings.get_always_on_top())
@@ -365,6 +408,11 @@ class SettingsPanel(QWidget):
         self.auto_hide_check.setChecked(app_settings.get_auto_hide_titlebar())
         self.auto_hide_check.toggled.connect(self._on_auto_hide_toggled)
         layout.addWidget(self.auto_hide_check)
+
+        self.quit_on_close_check = QCheckBox("Quit on close (don't minimize to tray)")
+        self.quit_on_close_check.setChecked(app_settings.get_quit_on_close())
+        self.quit_on_close_check.toggled.connect(self._on_quit_on_close_toggled)
+        layout.addWidget(self.quit_on_close_check)
 
         layout.addSpacing(10)
         layout.addWidget(QLabel("START MENU", objectName="sectionLabel"))
@@ -394,6 +442,32 @@ class SettingsPanel(QWidget):
             self.cred_status.setText(f"Default: {DEFAULT_CREDENTIALS_PATH}")
             self.cred_reset_btn.hide()
 
+    def refresh_token_status(self) -> None:
+        """Show current access-token validity from the credentials file."""
+        exp = token_refresh.token_expiry_ms(credentials_path())
+        if exp is None:
+            self.token_status.setText("Token expiry unknown.")
+            return
+        secs = exp / 1000 - time.time()
+        if secs <= 0:
+            self.token_status.setText("Token expired — will auto-refresh, or refresh now.")
+        else:
+            h, m = int(secs // 3600), int((secs % 3600) // 60)
+            self.token_status.setText(f"Token valid for ~{h}h {m}m.")
+
+    def set_token_status(self, text: str) -> None:
+        self.token_status.setText(text)
+
+    def _on_auto_refresh_toggled(self, checked: bool) -> None:
+        app_settings.set_auto_refresh(checked)
+        if self._on_auto_refresh_changed:
+            self._on_auto_refresh_changed(checked)
+
+    def _on_refresh_token_clicked(self) -> None:
+        if self._on_refresh_token:
+            self.set_token_status("Refreshing…")
+            self._on_refresh_token()
+
     def _on_aot_toggled(self, checked: bool) -> None:
         app_settings.set_always_on_top(checked)
         if self._on_aot_changed:
@@ -403,6 +477,9 @@ class SettingsPanel(QWidget):
         app_settings.set_auto_hide_titlebar(checked)
         if self._on_auto_hide_changed:
             self._on_auto_hide_changed(checked)
+
+    def _on_quit_on_close_toggled(self, checked: bool) -> None:
+        app_settings.set_quit_on_close(checked)
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
@@ -455,6 +532,7 @@ class SettingsPanel(QWidget):
         p = self.parentWidget()
         if not p:
             return
+        self.refresh_token_status()
         self.show()
         self.raise_()
         start = QRect(p.width(), 0, self.WIDTH, p.height())
@@ -574,6 +652,8 @@ class Dashboard(QMainWindow):
             on_always_on_top_changed=self._set_always_on_top,
             on_auto_hide_changed=self._apply_auto_hide,
             on_close_requested=self._close_settings,
+            on_refresh_token=self._request_token_refresh,
+            on_auto_refresh_changed=self._set_auto_refresh,
         )
         self.settings_panel.place_closed()
         content.installEventFilter(self)
@@ -786,7 +866,27 @@ class Dashboard(QMainWindow):
     def _start_poller(self) -> None:
         self._poller = UsagePoller()
         self._poller.sample.connect(self._on_sample)
+        self._poller.refresh_status.connect(self._on_refresh_status)
         self._poller.start()
+
+    def _request_token_refresh(self) -> None:
+        poller = getattr(self, "_poller", None)
+        if poller is None:
+            self.settings_panel.set_token_status("Not available in mock mode.")
+            return
+        poller.request_manual_refresh()
+
+    def _set_auto_refresh(self, on: bool) -> None:
+        poller = getattr(self, "_poller", None)
+        if poller is not None:
+            poller.set_auto_refresh(on)
+
+    def _on_refresh_status(self, result) -> None:
+        """token_refresh.RefreshResult from the poll thread (auto or manual)."""
+        if result.ok:
+            self.settings_panel.refresh_token_status()
+        else:
+            self.settings_panel.set_token_status("⚠ " + result.status)
 
     def _start_mock(self) -> None:
         self._mock_group = 0
@@ -933,11 +1033,14 @@ class Dashboard(QMainWindow):
         self.activateWindow()
 
     def closeEvent(self, event) -> None:
-        if self._tray.isVisible():
+        # Minimize to tray unless the user opted into quit-on-close (or the tray
+        # isn't available, in which case closing must actually exit).
+        if app_settings.get_quit_on_close() or not self._tray.isVisible():
+            event.accept()
+            self._real_quit()
+        else:
             self.hide()
             event.ignore()
-        else:
-            event.accept()
 
     def _real_quit(self) -> None:
         if hasattr(self, "_poller"):

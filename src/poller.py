@@ -20,6 +20,9 @@ from pathlib import Path
 import httpx
 from PySide6.QtCore import QThread, Signal
 
+import app_settings
+import token_refresh
+
 API_URL = "https://api.anthropic.com/v1/messages"
 API_HEADERS_TEMPLATE = {
     "anthropic-version": "2023-06-01",
@@ -129,20 +132,65 @@ def _poll_once(token: str) -> UsageSample:
 
 
 class UsagePoller(QThread):
-    """Background polling thread. Emits sample(UsageSample) on every poll."""
+    """Background polling thread. Emits sample(UsageSample) on every poll.
+
+    Also keeps the OAuth access token fresh (BETA): when the stored token is
+    expired it refreshes it via `token_refresh` before polling, so the
+    dashboard doesn't go blank every ~8h. A manual refresh can be requested
+    with request_manual_refresh(); outcomes are reported on `refresh_status`.
+    All refresh work runs on this thread (never the GUI thread).
+    """
 
     sample = Signal(UsageSample)
+    refresh_status = Signal(object)  # token_refresh.RefreshResult
+
+    REFRESH_COOLDOWN_MIN = 60.0    # seconds between auto attempts
+    REFRESH_COOLDOWN_MAX = 900.0   # backoff ceiling after a 429
 
     def __init__(self, interval_seconds: int = POLL_INTERVAL_SECONDS, parent=None) -> None:
         super().__init__(parent)
         self._interval = interval_seconds
         self._stop = False
+        self._auto_refresh = app_settings.get_auto_refresh()
+        self._manual_refresh = False
+        self._last_refresh_attempt = 0.0
+        self._cooldown = self.REFRESH_COOLDOWN_MIN
 
     def stop(self) -> None:
         self._stop = True
 
+    def set_auto_refresh(self, on: bool) -> None:
+        self._auto_refresh = bool(on)
+
+    def request_manual_refresh(self) -> None:
+        """Ask the poll thread to refresh the token ASAP (bypasses cooldown)."""
+        self._manual_refresh = True
+
+    def _do_refresh(self, manual: bool) -> None:
+        self._last_refresh_attempt = time.time()
+        result = token_refresh.refresh(credentials_path())
+        if result.ok:
+            self._cooldown = self.REFRESH_COOLDOWN_MIN
+        elif result.http_status == 429 and not manual:
+            self._cooldown = min(self._cooldown * 2, self.REFRESH_COOLDOWN_MAX)
+        self.refresh_status.emit(result)
+
+    def _maybe_auto_refresh(self) -> None:
+        if not self._auto_refresh:
+            return
+        if not token_refresh.is_expired(credentials_path()):
+            return
+        if time.time() - self._last_refresh_attempt < self._cooldown:
+            return
+        self._do_refresh(manual=False)
+
     def run(self) -> None:  # QThread entry
         while not self._stop:
+            if self._manual_refresh:
+                self._manual_refresh = False
+                self._do_refresh(manual=True)
+            self._maybe_auto_refresh()
+
             token = read_token()
             if not token:
                 self.sample.emit(UsageSample(
@@ -151,7 +199,10 @@ class UsagePoller(QThread):
                 ))
             else:
                 self.sample.emit(_poll_once(token))
+
             for _ in range(self._interval):
                 if self._stop:
                     return
+                if self._manual_refresh:
+                    break  # service the request promptly at the top of the loop
                 self.msleep(1000)

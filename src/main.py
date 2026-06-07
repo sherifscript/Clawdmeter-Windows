@@ -9,6 +9,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 import app_settings
+import single_instance
 from dashboard import Dashboard
 from sprite_player import assets_root
 
@@ -19,6 +20,11 @@ def main() -> int:
     app.setApplicationName("Clawdmeter")
     app.setOrganizationName(app_settings.ORG)
     app.setQuitOnLastWindowClosed(False)  # tray keeps app alive
+
+    # Single instance: if a copy is already running, surface its window and
+    # exit instead of starting a duplicate process that lingers in the tray.
+    if single_instance.activate_running_instance():
+        return 0
 
     # Apply persisted credentials override before the poller starts.
     cred = app_settings.get_credentials_override()
@@ -31,6 +37,11 @@ def main() -> int:
 
     win = Dashboard(mock=mock)
     win.show()
+
+    # Listen for later launches so they surface this window instead of
+    # spawning a duplicate. Kept on `app` so it isn't garbage-collected.
+    app._instance_server = single_instance.InstanceServer(on_show=win._show_window)
+
     return app.exec()
 
 

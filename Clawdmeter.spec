@@ -19,7 +19,8 @@ a = Analysis(
     hookspath=[],
     runtime_hooks=[],
     excludes=[
-        'PySide6.QtNetwork',
+        # QtNetwork is bundled (NOT excluded): single_instance.py uses
+        # QLocalServer/QLocalSocket for the single-instance guard.
         'PySide6.QtQml',
         'PySide6.QtQuick',
         'PySide6.QtWebEngineCore',

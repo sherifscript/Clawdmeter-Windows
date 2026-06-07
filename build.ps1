@@ -11,7 +11,7 @@ if (-not (Test-Path .venv)) {
 
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\pip.exe install -r requirements.txt
-& .\.venv\Scripts\pip.exe install pyinstaller==6.11.1
+& .\.venv\Scripts\pip.exe install pyinstaller==6.20.0
 
 & .\.venv\Scripts\pyinstaller.exe --clean Clawdmeter.spec
 

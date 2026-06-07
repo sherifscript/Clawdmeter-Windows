@@ -10,6 +10,8 @@ APP = "Clawdmeter"
 KEY_CRED_PATH = "credentials/path"
 KEY_ALWAYS_ON_TOP = "window/always_on_top"
 KEY_AUTO_HIDE_TITLEBAR = "window/auto_hide_titlebar"
+KEY_QUIT_ON_CLOSE = "window/quit_on_close"
+KEY_AUTO_REFRESH = "token/auto_refresh"
 
 
 def _settings() -> QSettings:
@@ -45,3 +47,25 @@ def get_auto_hide_titlebar() -> bool:
 
 def set_auto_hide_titlebar(on: bool) -> None:
     _settings().setValue(KEY_AUTO_HIDE_TITLEBAR, bool(on))
+
+
+def get_quit_on_close() -> bool:
+    v = _settings().value(KEY_QUIT_ON_CLOSE, False)  # default: minimize to tray
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_quit_on_close(on: bool) -> None:
+    _settings().setValue(KEY_QUIT_ON_CLOSE, bool(on))
+
+
+def get_auto_refresh() -> bool:
+    v = _settings().value(KEY_AUTO_REFRESH, True)  # beta: on by default
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def set_auto_refresh(on: bool) -> None:
+    _settings().setValue(KEY_AUTO_REFRESH, bool(on))
