@@ -55,10 +55,12 @@ def send_ntfy(
 
     # Title goes in a header (ASCII-safe); the message body is the POST content.
     headers = {"Title": title, "Priority": "default", "Tags": "bell"}
+    # Broad except on purpose: beyond HTTPError, a malformed topic can raise
+    # httpx.InvalidURL (not an HTTPError subclass) — report it, don't raise.
     try:
         with httpx.Client(timeout=timeout) as http:
             resp = http.post(url, content=body.encode("utf-8"), headers=headers)
             resp.raise_for_status()
-    except httpx.HTTPError as exc:
+    except Exception as exc:
         return False, f"ntfy push failed: {exc}"
     return True, "sent"

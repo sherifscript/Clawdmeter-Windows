@@ -95,11 +95,21 @@ def test_send_posts_expected_request():
 
 
 def test_send_reports_http_error():
-    fake = _install_fake_httpx(raise_exc=Exception("boom"))
-    # Make raise_for_status trip with the module's HTTPError type.
+    _install_fake_httpx(raise_exc=Exception("boom"))
     ok, msg = send_ntfy("topic1", "t", "b")
     assert not ok and "ntfy push failed" in msg
-    assert isinstance(fake.HTTPError, type)
+
+
+def test_send_reports_non_http_error():
+    # e.g. httpx.InvalidURL is NOT an HTTPError subclass — a malformed topic
+    # must still be reported, never raised into the caller's thread.
+    class _HTTPError(Exception):
+        pass
+
+    fake = _install_fake_httpx(raise_exc=ValueError("invalid url"))
+    fake.HTTPError = _HTTPError  # ValueError is outside this hierarchy
+    ok, msg = send_ntfy("bad topic!", "t", "b")
+    assert not ok and "ntfy push failed" in msg
 
 
 if __name__ == "__main__":

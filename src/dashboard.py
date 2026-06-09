@@ -8,6 +8,7 @@ slide-in settings panel on the right.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -60,7 +61,7 @@ import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
 import remote_notify
-from reset_notify import ResetNotifier
+from reset_notify import ResetDecision, ResetNotifier
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
@@ -1216,7 +1217,7 @@ class Dashboard(QMainWindow):
         if decision.notify and app_settings.get_reset_notify():
             self._fire_reset_notification(decision)
 
-    def _fire_reset_notification(self, decision) -> None:
+    def _fire_reset_notification(self, decision: ResetDecision) -> None:
         """Surface a gated limit reset via the user's chosen methods."""
         which = " & ".join(r.capitalize() for r in decision.reasons) or "Usage"
         title = "Claude limit reset"
@@ -1242,8 +1243,10 @@ class Dashboard(QMainWindow):
 
         def worker() -> None:
             ok, msg = remote_notify.send_ntfy(topic, title, body)
-            if not ok:
-                print(f"[clawdmeter] {msg}")
+            # The frozen app runs windowed (console=False), where stderr is None
+            # and print() would raise — guard so the failure stays silent-but-safe.
+            if not ok and sys.stderr is not None:
+                sys.stderr.write(f"[clawdmeter] {msg}\n")
 
         threading.Thread(target=worker, name="ntfy-push", daemon=True).start()
 
