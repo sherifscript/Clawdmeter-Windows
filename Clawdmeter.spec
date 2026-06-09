@@ -49,7 +49,9 @@ a = Analysis(
 # in README/NOTICE if you change the imported Qt modules.
 
 # 1. Native Qt DLLs the app never imports (QML/Quick/Pdf/OpenGL/Svg/VirtualKeyboard).
-#    opengl32sw.dll is Qt's ~20 MB software-OpenGL fallback, unneeded for a Widgets UI.
+#    opengl32sw.dll is Qt's ~20 MB software-OpenGL fallback, unneeded for an opaque
+#    Widgets UI. (If you reintroduce a WA_TranslucentBackground window, stop pruning
+#    it — translucent compositing fails in the frozen build without this fallback.)
 _DROP_QT_DLL = (
     'opengl32sw', 'Qt6Quick', 'Qt6Qml', 'Qt6Pdf', 'Qt6OpenGL',
     'Qt6Svg', 'Qt6VirtualKeyboard', 'Qt6QmlModels', 'Qt6QmlMeta',

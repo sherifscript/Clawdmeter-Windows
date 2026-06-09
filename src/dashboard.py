@@ -152,7 +152,7 @@ QCheckBox::indicator:checked {
 QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
 
 QWidget#compactRoot {
-    background-color: rgba(14, 17, 22, 204);
+    background-color: #0e1116;
     border: 1px solid #1f2937;
 }
 QLabel#compactPct { font-size: 15px; font-weight: 700; color: #e6edf3; }
@@ -218,7 +218,9 @@ class CompactWidget(QWidget):
         self.setWindowTitle("Clawdmeter")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(STYLESHEET)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        # Opaque background matching the main window (#0e1116). Intentionally NOT a
+        # WA_TranslucentBackground window: translucent compositing needs Qt's bundled
+        # opengl32sw.dll fallback in the frozen build, which the spec prunes for size.
         self.setWindowFlags(
             Qt.Window | Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
         )
