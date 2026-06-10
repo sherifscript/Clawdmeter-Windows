@@ -109,6 +109,16 @@ Open the settings panel from the gear icon in the title bar.
   the token is actually expired.
 - **Window** — toggle **Always on top**, **Auto-hide title bar**, and **Quit on
   close** (closes the app instead of minimizing to the tray).
+- **Notifications** — **Notify on limit reset** pings you the moment a usage
+  limit resets so you know you can resume — but only when you were actually near
+  the limit (or already throttled), so it stays quiet otherwise. It shows a tray
+  notification and briefly flashes the tray icon; **Play a sound**, **Pop the
+  window to front**, and **Send a push to my phone** are optional extras you can
+  switch off. The phone push reaches you via either **ntfy** or **Telegram**:
+  with [ntfy](https://ntfy.sh) (no account or API key) you subscribe to a topic
+  of your choosing in the ntfy app — pick a long, hard-to-guess topic since
+  anyone who knows it can read your alerts; with **Telegram** you create a bot
+  via @BotFather and enter its token and your chat ID. Keep both secret.
 - **Start menu** — add or remove a Start-menu shortcut (right-click it in Start
   to pin).
 

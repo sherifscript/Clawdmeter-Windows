@@ -8,6 +8,8 @@ slide-in settings panel on the right.
 from __future__ import annotations
 
 import os
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -33,11 +35,14 @@ from PySide6.QtGui import (
     QPixmap,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -56,6 +61,8 @@ import token_refresh
 import winutil
 from mood import GROUP_ANIMS, GROUP_NAMES, RateGroupTracker
 from poller import UsagePoller, UsageSample, credentials_path, DEFAULT_CREDENTIALS_PATH
+import remote_notify
+from reset_notify import ResetDecision, ResetNotifier
 from sprite_player import SpritePlayer, assets_root
 from transcript import (
     ACTIVITY_ANIMS,
@@ -153,11 +160,20 @@ QWidget#scrim { background-color: rgba(0, 0, 0, 60); }
 
 QWidget#compactRoot {
     background-color: #0e1116;
-    border: 1px solid #1f2937;
+    border: 1px solid #CE7D6B;
 }
-QLabel#compactPct { font-size: 15px; font-weight: 700; color: #e6edf3; }
-QLabel#compactPctSub { font-size: 12px; font-weight: 700; color: #9ca3af; }
-QLabel#compactReset { font-size: 11px; color: #9ca3af; }
+QLabel#compactPct { font-size: 17px; font-weight: 700; color: #e6edf3; }
+QLabel#compactPctSub { font-size: 13px; font-weight: 700; color: #9ca3af; }
+QLabel#compactReset { font-size: 12px; color: #9ca3af; }
+
+QWidget#toastRoot {
+    background-color: #0e1116;
+    border: 1px solid #CE7D6B;
+}
+QLabel#toastTitle {
+    font-size: 14px; font-weight: 700; color: #e6edf3; letter-spacing: 0.5px;
+}
+QLabel#toastBody { font-size: 12px; color: #9ca3af; }
 """
 
 
@@ -199,6 +215,46 @@ def _tray_pixmap(pct: int) -> QPixmap:
     return pm
 
 
+def _tray_alert_pixmap() -> QPixmap:
+    """High-contrast green "go / resume" variant used by the reset-flash."""
+    pm = QPixmap(32, 32)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setBrush(QColor("#22c55e"))
+    p.setPen(Qt.NoPen)
+    p.drawEllipse(2, 2, 28, 28)
+    p.setBrush(QColor("#0e1116"))
+    p.drawEllipse(9, 9, 14, 14)
+    p.end()
+    return pm
+
+
+def _push_configured() -> bool:
+    """True if the selected push provider has the credentials it needs."""
+    if app_settings.get_reset_notify_push_provider() == "telegram":
+        return bool(
+            app_settings.get_reset_notify_push_tg_token()
+            and app_settings.get_reset_notify_push_tg_chat()
+        )
+    return bool(app_settings.get_reset_notify_push_topic())
+
+
+def _dispatch_push(title: str, body: str) -> tuple[bool, str]:
+    """Send a push via the configured provider. Shared by the reset
+    notification and the Settings test button so both exercise one code path."""
+    if app_settings.get_reset_notify_push_provider() == "telegram":
+        return remote_notify.send_telegram(
+            app_settings.get_reset_notify_push_tg_token(),
+            app_settings.get_reset_notify_push_tg_chat(),
+            title,
+            body,
+        )
+    return remote_notify.send_ntfy(
+        app_settings.get_reset_notify_push_topic(), title, body
+    )
+
+
 class CompactWidget(QWidget):
     """Tiny always-on-top floating readout: mini mascot + session/weekly bars.
 
@@ -210,7 +266,7 @@ class CompactWidget(QWidget):
     expand_requested = Signal()
     quit_requested = Signal()
 
-    SPRITE = 34
+    SPRITE = 37
 
     def __init__(self) -> None:
         super().__init__(None)
@@ -231,8 +287,8 @@ class CompactWidget(QWidget):
         self._drag_offset: QPoint | None = None
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(7, 4, 10, 4)
-        row.setSpacing(8)
+        row.setContentsMargins(8, 4, 11, 5)
+        row.setSpacing(9)
 
         self.sprite = SpritePlayer(size=self.SPRITE)
         row.addWidget(self.sprite)
@@ -263,9 +319,9 @@ class CompactWidget(QWidget):
 
     def _row(self, parent_layout: QVBoxLayout, pct_object: str):
         line = QHBoxLayout()
-        line.setSpacing(6)
+        line.setSpacing(7)
         pct = QLabel("-", objectName=pct_object)
-        pct.setMinimumWidth(38)
+        pct.setMinimumWidth(42)
         pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         reset = QLabel("", objectName="compactReset")
         reset.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -303,6 +359,141 @@ class CompactWidget(QWidget):
         if e.button() == Qt.LeftButton:
             self.expand_requested.emit()
             e.accept()
+
+
+class ResetToast(QWidget):
+    """Themed limit-reset toast: a frameless card with the mascot, a title and
+    a one-line body. Fades in at the bottom-right of the primary screen, auto-
+    dismisses after DURATION_MS, and emits `clicked` (then dismisses) on click
+    so the dashboard can pop to the foreground.
+
+    Replaces QSystemTrayIcon.showMessage so the reset alert matches the app's
+    look. Pure QtWidgets/QtGui/QtCore — no QtMultimedia, no new dependency.
+    """
+
+    clicked = Signal()
+
+    MARGIN = 18           # gap from the screen working-area edges
+    DURATION_MS = 8000    # visible time before the auto fade-out
+    FADE_MS = 220
+    # A reset is good news, so the mascot does its DJ bounce rather than idling.
+    ANIMS = ["dance bounce dj"]
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.setObjectName("toastShell")
+        self.setWindowTitle("Clawdmeter")
+        self._show_seq = 0  # bumps each show so the sprite restarts its anim
+        # Frameless, on-top, no taskbar entry, and — critically — never steal
+        # focus/activation from whatever the user is doing when it pops.
+        self.setWindowFlags(
+            Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+        )
+        # Opaque, like the main/compact windows. NOT WA_TranslucentBackground:
+        # the slim frozen build prunes opengl32sw.dll, without which translucent
+        # compositing renders wrong. windowOpacity (the fade) is a separate OS
+        # layered-window feature and keeps working.
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        card = QWidget(objectName="toastRoot")
+        card.setAttribute(Qt.WA_StyledBackground, True)
+        card.setStyleSheet(STYLESHEET)
+        outer.addWidget(card)
+
+        row = QHBoxLayout(card)
+        row.setContentsMargins(14, 12, 16, 12)
+        row.setSpacing(12)
+
+        self.sprite = SpritePlayer(size=44)
+        row.addWidget(self.sprite, 0, Qt.AlignVCenter)
+
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        self.title = QLabel("", objectName="toastTitle")
+        self.body = QLabel("", objectName="toastBody")
+        self.body.setWordWrap(True)
+        text.addWidget(self.title)
+        text.addWidget(self.body)
+        row.addLayout(text, 1)
+
+        self.setFixedWidth(330)
+
+        self._fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._fade.setDuration(self.FADE_MS)
+        self._fade.setEasingCurve(QEasingCurve.OutCubic)
+        self._fade_hooked = False  # is _on_faded_out currently connected?
+
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.timeout.connect(self.dismiss)
+
+    def show_message(self, title: str, body: str) -> None:
+        """Show (or re-show) the toast with new text and restart the timer."""
+        self.title.setText(title)
+        self.body.setText(body)
+        # dismiss() stops the sprite, and set_anims() no-ops on an unchanged key —
+        # so reuse of a fixed key would leave the mascot frozen on every toast
+        # after the first. A fresh key each show forces a clean restart.
+        self._show_seq += 1
+        self.sprite.set_anims(f"toast{self._show_seq}", self.ANIMS)
+        self.adjustSize()
+        self._move_to_corner()
+
+        # Cancel any in-flight fade-out so a fresh alert always lands at full
+        # opacity, and drop the hide-on-finish hook from a prior dismiss().
+        self._fade.stop()
+        self._disconnect_fade_finished()
+        self.setWindowOpacity(0.0)
+        self.show()
+        self.raise_()
+        self._fade.setStartValue(0.0)
+        self._fade.setEndValue(1.0)
+        self._fade.start()
+
+        self._dismiss_timer.start(self.DURATION_MS)
+
+    def dismiss(self) -> None:
+        """Fade out and hide. Safe to call when already hidden."""
+        self._dismiss_timer.stop()
+        self._fade.stop()
+        if not self._fade_hooked:
+            self._fade.finished.connect(self._on_faded_out)
+            self._fade_hooked = True
+        self._fade.setStartValue(self.windowOpacity())
+        self._fade.setEndValue(0.0)
+        self._fade.start()
+
+    def _on_faded_out(self) -> None:
+        # A new show_message() during the fade would have bumped opacity back
+        # up; only actually hide if we really faded to zero.
+        if self.windowOpacity() <= 0.01:
+            self.sprite.stop()
+            self.hide()
+
+    def _disconnect_fade_finished(self) -> None:
+        if self._fade_hooked:
+            self._fade.finished.disconnect(self._on_faded_out)
+            self._fade_hooked = False
+
+    def _move_to_corner(self) -> None:
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        geo = screen.availableGeometry()  # excludes the taskbar
+        x = geo.right() - self.width() - self.MARGIN
+        y = geo.bottom() - self.height() - self.MARGIN
+        self.move(x, y)
+
+    def mousePressEvent(self, e) -> None:
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
+            self.dismiss()
+            e.accept()
+        else:
+            super().mousePressEvent(e)
 
 
 class Scrim(QWidget):
@@ -435,6 +626,9 @@ class SettingsPanel(QWidget):
     WIDTH = 280
     ANIM_MS = 220
 
+    # Emitted from the push-test worker thread; delivered on the UI thread.
+    _push_test_result = Signal(bool, str)
+
     def __init__(self, parent: QWidget, on_always_on_top_changed, on_auto_hide_changed, on_close_requested,
                  on_refresh_token=None, on_auto_refresh_changed=None) -> None:
         super().__init__(parent)
@@ -534,6 +728,99 @@ class SettingsPanel(QWidget):
         layout.addWidget(self.quit_on_close_check)
 
         layout.addSpacing(10)
+        layout.addWidget(QLabel("NOTIFICATIONS", objectName="sectionLabel"))
+        notify_hint = QLabel(
+            "Alert me when a usage limit resets and I can resume — only when I "
+            "was near the limit.",
+            objectName="sectionHint",
+        )
+        notify_hint.setWordWrap(True)
+        layout.addWidget(notify_hint)
+        self.notify_check = QCheckBox("Notify on limit reset")
+        self.notify_check.setChecked(app_settings.get_reset_notify())
+        self.notify_check.toggled.connect(self._on_notify_toggled)
+        layout.addWidget(self.notify_check)
+
+        self.notify_sound_check = QCheckBox("    Play a sound")
+        self.notify_sound_check.setChecked(app_settings.get_reset_notify_sound())
+        self.notify_sound_check.toggled.connect(self._on_notify_sound_toggled)
+        layout.addWidget(self.notify_sound_check)
+
+        self.notify_popup_check = QCheckBox("    Pop the window to front")
+        self.notify_popup_check.setChecked(app_settings.get_reset_notify_popup())
+        self.notify_popup_check.toggled.connect(self._on_notify_popup_toggled)
+        layout.addWidget(self.notify_popup_check)
+
+        self.notify_push_check = QCheckBox("    Send a push to my phone")
+        self.notify_push_check.setChecked(app_settings.get_reset_notify_push())
+        self.notify_push_check.toggled.connect(self._on_notify_push_toggled)
+        layout.addWidget(self.notify_push_check)
+
+        push_provider_row = QHBoxLayout()
+        push_provider_row.addWidget(QLabel("    via"))
+        self.notify_push_provider = QComboBox()
+        self.notify_push_provider.addItem("ntfy", "ntfy")
+        self.notify_push_provider.addItem("Telegram", "telegram")
+        idx = self.notify_push_provider.findData(app_settings.get_reset_notify_push_provider())
+        self.notify_push_provider.setCurrentIndex(max(0, idx))
+        self.notify_push_provider.currentIndexChanged.connect(
+            self._on_notify_push_provider_changed
+        )
+        push_provider_row.addWidget(self.notify_push_provider, 1)
+        layout.addLayout(push_provider_row)
+
+        # ntfy fields
+        self.notify_push_topic = QLineEdit()
+        self.notify_push_topic.setPlaceholderText(
+            "ntfy topic (e.g. clawd-nick-7f3a) or full URL"
+        )
+        self.notify_push_topic.setText(app_settings.get_reset_notify_push_topic())
+        self.notify_push_topic.editingFinished.connect(self._on_notify_push_topic_changed)
+        layout.addWidget(self.notify_push_topic)
+        self.notify_push_ntfy_hint = QLabel(
+            "Subscribe to the same topic in the ntfy app (Android/iOS). Pick a "
+            "long, hard-to-guess topic — anyone who knows it can read your alerts.",
+            objectName="sectionHint",
+        )
+        self.notify_push_ntfy_hint.setWordWrap(True)
+        layout.addWidget(self.notify_push_ntfy_hint)
+
+        # Telegram fields
+        self.notify_push_tg_token = QLineEdit()
+        self.notify_push_tg_token.setPlaceholderText("Telegram bot token (from @BotFather)")
+        self.notify_push_tg_token.setEchoMode(QLineEdit.Password)
+        self.notify_push_tg_token.setText(app_settings.get_reset_notify_push_tg_token())
+        self.notify_push_tg_token.editingFinished.connect(
+            self._on_notify_push_tg_token_changed
+        )
+        layout.addWidget(self.notify_push_tg_token)
+        self.notify_push_tg_chat = QLineEdit()
+        self.notify_push_tg_chat.setPlaceholderText("Telegram chat ID (e.g. 123456789)")
+        self.notify_push_tg_chat.setText(app_settings.get_reset_notify_push_tg_chat())
+        self.notify_push_tg_chat.editingFinished.connect(
+            self._on_notify_push_tg_chat_changed
+        )
+        layout.addWidget(self.notify_push_tg_chat)
+        self.notify_push_tg_hint = QLabel(
+            "Message @BotFather to create a bot and copy its token, then DM your "
+            "bot and read your chat ID from "
+            "api.telegram.org/bot<token>/getUpdates. Keep the token private.",
+            objectName="sectionHint",
+        )
+        self.notify_push_tg_hint.setWordWrap(True)
+        layout.addWidget(self.notify_push_tg_hint)
+
+        self.notify_push_test_btn = QPushButton("Send test notification")
+        self.notify_push_test_btn.clicked.connect(self._on_test_push_clicked)
+        layout.addWidget(self.notify_push_test_btn)
+        self.notify_push_test_status = QLabel("", objectName="sectionHint")
+        self.notify_push_test_status.setWordWrap(True)
+        layout.addWidget(self.notify_push_test_status)
+        self._push_test_result.connect(self._on_test_push_result)
+
+        self._sync_notify_subtoggles()
+
+        layout.addSpacing(10)
         layout.addWidget(QLabel("START MENU", objectName="sectionLabel"))
         hint = QLabel(
             "Adds a Start menu shortcut. Right-click it in Start to Pin to Start.",
@@ -630,6 +917,79 @@ class SettingsPanel(QWidget):
 
     def _on_quit_on_close_toggled(self, checked: bool) -> None:
         app_settings.set_quit_on_close(checked)
+
+    def _on_notify_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify(checked)
+        self._sync_notify_subtoggles()
+
+    def _on_notify_sound_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_sound(checked)
+
+    def _on_notify_popup_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_popup(checked)
+
+    def _on_notify_push_toggled(self, checked: bool) -> None:
+        app_settings.set_reset_notify_push(checked)
+        self._sync_notify_subtoggles()
+
+    def _on_notify_push_provider_changed(self) -> None:
+        app_settings.set_reset_notify_push_provider(self.notify_push_provider.currentData())
+        self._sync_notify_subtoggles()
+
+    def _on_notify_push_topic_changed(self) -> None:
+        app_settings.set_reset_notify_push_topic(self.notify_push_topic.text())
+
+    def _on_notify_push_tg_token_changed(self) -> None:
+        app_settings.set_reset_notify_push_tg_token(self.notify_push_tg_token.text())
+
+    def _on_notify_push_tg_chat_changed(self) -> None:
+        app_settings.set_reset_notify_push_tg_chat(self.notify_push_tg_chat.text())
+
+    def _on_test_push_clicked(self) -> None:
+        """Send a one-off push with the current settings so the user can verify
+        their setup. Runs off the UI thread; the result returns via signal."""
+        self.notify_push_test_btn.setEnabled(False)
+        self.notify_push_test_status.setText("Sending…")
+
+        def worker() -> None:
+            ok, msg = _dispatch_push(
+                "Clawdmeter test",
+                "If you can see this, your phone notifications are set up.",
+            )
+            self._push_test_result.emit(ok, msg)
+
+        threading.Thread(target=worker, name="push-test", daemon=True).start()
+
+    def _on_test_push_result(self, ok: bool, msg: str) -> None:
+        self._sync_notify_subtoggles()  # re-enables the button (clears status)
+        self.notify_push_test_status.setText(
+            "Sent — check your phone." if ok else f"Failed: {msg}"
+        )
+
+    def _sync_notify_subtoggles(self) -> None:
+        """Grey out the per-method sub-toggles when the master switch is off, and
+        show only the selected push provider's credential fields."""
+        on = self.notify_check.isChecked()
+        self.notify_sound_check.setEnabled(on)
+        self.notify_popup_check.setEnabled(on)
+        self.notify_push_check.setEnabled(on)
+
+        push_on = on and self.notify_push_check.isChecked()
+        self.notify_push_provider.setEnabled(push_on)
+        is_ntfy = self.notify_push_provider.currentData() == "ntfy"
+
+        # Only the chosen provider's fields are shown; both enable with push.
+        self.notify_push_topic.setVisible(is_ntfy)
+        self.notify_push_ntfy_hint.setVisible(is_ntfy)
+        self.notify_push_tg_token.setVisible(not is_ntfy)
+        self.notify_push_tg_chat.setVisible(not is_ntfy)
+        self.notify_push_tg_hint.setVisible(not is_ntfy)
+        self.notify_push_topic.setEnabled(push_on)
+        self.notify_push_tg_token.setEnabled(push_on)
+        self.notify_push_tg_chat.setEnabled(push_on)
+        self.notify_push_test_btn.setEnabled(push_on)
+        if not push_on:
+            self.notify_push_test_status.clear()
 
     def _refresh_start_menu_btn(self) -> None:
         if start_menu.has_shortcut():
@@ -837,6 +1197,7 @@ class Dashboard(QMainWindow):
         self._apply_auto_hide(app_settings.get_auto_hide_titlebar())
 
         self._rate = RateGroupTracker()
+        self._reset_notifier = ResetNotifier()
         self._last_sample: UsageSample | None = None
         self._last_tooltip = ""
         self._transcript_state: TranscriptState | None = None
@@ -861,10 +1222,24 @@ class Dashboard(QMainWindow):
         self._tray.setToolTip("Clawdmeter - starting…")
         self._tray.show()
 
+        # Tray-flash state for the limit-reset notification.
+        self._flash_timer = QTimer(self)
+        self._flash_timer.setInterval(400)
+        self._flash_timer.timeout.connect(self._flash_tick)
+        self._flash_alert_icon = QIcon(_tray_alert_pixmap())
+        self._flash_saved_icon: QIcon | None = None
+        self._flash_remaining = 0
+        self._flash_on = False
+
         # Compact mode: a tiny always-on-top floating widget mirroring usage.
         self.compact = CompactWidget()
         self.compact.expand_requested.connect(self._exit_compact)
         self.compact.quit_requested.connect(self._real_quit)
+
+        # Custom limit-reset toast (replaces the native OS notification);
+        # clicking it brings the dashboard forward.
+        self._toast = ResetToast()
+        self._toast.clicked.connect(self._show_window)
 
         self._countdown = QTimer(self)
         self._countdown.setInterval(1000)
@@ -1075,6 +1450,9 @@ class Dashboard(QMainWindow):
         sample_tick()
 
     def _on_sample(self, s: UsageSample) -> None:
+        # Feed every sample (incl. errors) so the notifier can ignore them
+        # without disturbing its baseline.
+        decision = self._reset_notifier.observe(s)
         self._last_sample = s
         if not s.ok:
             self._apply_status_badge(s.status)
@@ -1104,6 +1482,65 @@ class Dashboard(QMainWindow):
         self._apply_status_badge(s.status)
         self._set_tray_tooltip(s.session_pct, s.session_reset_minutes,
                                s.weekly_pct, s.weekly_reset_minutes)
+
+        # Fire last, so the UI already reflects the post-reset state before we
+        # (optionally) pop the window to the foreground.
+        if decision.notify and app_settings.get_reset_notify():
+            self._fire_reset_notification(decision)
+
+    def _fire_reset_notification(self, decision: ResetDecision) -> None:
+        """Surface a gated limit reset via the user's chosen methods."""
+        which = " & ".join(r.capitalize() for r in decision.reasons) or "Usage"
+        title = "Claude limit reset"
+        body = f"{which} limit has reset — you can resume."
+
+        # Themed toast + tray flash always accompany the master toggle.
+        self._toast.show_message(title, body)
+        self._start_tray_flash()
+
+        if app_settings.get_reset_notify_sound():
+            QApplication.beep()
+        if app_settings.get_reset_notify_popup():
+            self._show_window()
+        if app_settings.get_reset_notify_push():
+            self._send_push(title, body)
+
+    def _send_push(self, title: str, body: str) -> None:
+        """Fire the phone push off the UI thread; a failure is logged, not raised."""
+        if not _push_configured():  # nothing to send to — stay a clean no-op
+            return
+
+        def worker() -> None:
+            ok, msg = _dispatch_push(title, body)
+            # The frozen app runs windowed (console=False), where stderr is None
+            # and print() would raise — guard so the failure stays silent-but-safe.
+            if not ok and sys.stderr is not None:
+                sys.stderr.write(f"[clawdmeter] {msg}\n")
+
+        threading.Thread(target=worker, name="push-notify", daemon=True).start()
+
+    def _start_tray_flash(self, cycles: int = 6) -> None:
+        if self._flash_timer.isActive():  # already flashing — just extend it
+            self._flash_remaining = max(self._flash_remaining, cycles * 2)
+            return
+        self._flash_saved_icon = self._tray.icon()  # snapshot the real icon
+        self._flash_remaining = cycles * 2
+        self._flash_on = False
+        self._flash_timer.start()
+
+    def _flash_tick(self) -> None:
+        if self._flash_remaining <= 0:
+            self._flash_timer.stop()
+            if self._flash_saved_icon is not None:
+                self._tray.setIcon(self._flash_saved_icon)  # restore exactly
+                self._flash_saved_icon = None
+            return
+        self._flash_on = not self._flash_on
+        self._tray.setIcon(
+            self._flash_alert_icon if self._flash_on
+            else (self._flash_saved_icon or self._tray.icon())
+        )
+        self._flash_remaining -= 1
 
     def _set_tray_tooltip(self, session_pct: int, session_reset: int,
                           weekly_pct: int, weekly_reset: int) -> None:
@@ -1272,5 +1709,7 @@ class Dashboard(QMainWindow):
             app_settings.set_compact_pos(self.compact.x(), self.compact.y())
         self.compact.sprite.stop()
         self.compact.close()
+        self._toast.sprite.stop()
+        self._toast.close()
         self._tray.hide()
         QGuiApplication.quit()
