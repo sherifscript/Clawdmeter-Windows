@@ -91,6 +91,27 @@ def read_token() -> str | None:
     return _extract_access_token(raw)
 
 
+def _error_status(code: int) -> str:
+    """Short, human badge text for a failed probe (shown on the main window)."""
+    if code in (401, 403):
+        return f"Token rejected ({code})"
+    if code == 429:
+        return f"API rate limited ({code})"
+    return f"API error ({code})"
+
+
+def _error_detail(resp: "httpx.Response") -> str:
+    """Best-effort error message from the API body, for the tray tooltip/logs."""
+    try:
+        msg = resp.json().get("error", {}).get("message")
+        if msg:
+            return f"HTTP {resp.status_code}: {msg}"
+    except (ValueError, AttributeError):
+        pass
+    body = (resp.text or "").strip().replace("\n", " ")
+    return f"HTTP {resp.status_code}: {body[:200]}" if body else f"HTTP {resp.status_code}"
+
+
 def _poll_once(token: str) -> UsageSample:
     """Make one rate-limit probe. Returns a sample with ok=False on failure."""
     headers = dict(API_HEADERS_TEMPLATE)
@@ -100,7 +121,16 @@ def _poll_once(token: str) -> UsageSample:
         with httpx.Client(timeout=20.0) as http:
             resp = http.post(API_URL, headers=headers, json=API_BODY)
     except httpx.HTTPError as exc:
-        return UsageSample(0, 0, 0, 0, "error", False, str(exc), now)
+        return UsageSample(0, 0, 0, 0, "Offline", False, str(exc), now)
+
+    # A non-200 means the probe itself failed (rejected token, throttling, etc.).
+    # Without this check the rate-limit headers are simply absent and every
+    # value silently falls back to 0 — i.e. empty bars with no explanation.
+    if resp.status_code != 200:
+        return UsageSample(
+            0, 0, 0, 0, _error_status(resp.status_code), False,
+            _error_detail(resp), now,
+        )
 
     def hdr(name: str, default: str = "0") -> str:
         return resp.headers.get(name, default)

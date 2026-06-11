@@ -1507,8 +1507,8 @@ class Dashboard(QMainWindow):
         decision = self._reset_notifier.observe(s)
         self._last_sample = s
         if not s.ok:
-            self._apply_status_badge(s.status)
-            self._tray.setToolTip(f"Clawdmeter - {s.status}")
+            self._apply_status_badge(s.status, is_error=True)
+            self._tray.setToolTip(f"Clawdmeter - {s.error or s.status}")
             self._last_tooltip = ""  # force a fresh stats tooltip on recovery
             return
 
@@ -1534,6 +1534,14 @@ class Dashboard(QMainWindow):
         self._apply_status_badge(s.status)
         self._set_tray_tooltip(s.session_pct, s.session_reset_minutes,
                                s.weekly_pct, s.weekly_reset_minutes)
+
+        # A successful poll proves the stored token is valid, so reconcile the
+        # settings panel: this clears a stale token-refresh warning (e.g. an old
+        # "Rate limited — backing off" 429) that would otherwise linger forever
+        # because no further refresh is attempted while the token is valid.
+        panel = getattr(self, "settings_panel", None)
+        if panel is not None:
+            panel.refresh_token_status()
 
         # Fire last, so the UI already reflects the post-reset state before we
         # (optionally) pop the window to the foreground.
@@ -1607,7 +1615,7 @@ class Dashboard(QMainWindow):
             self._last_tooltip = text
             self._tray.setToolTip(text)
 
-    def _apply_status_badge(self, status: str) -> None:
+    def _apply_status_badge(self, status: str, is_error: bool = False) -> None:
         """Show/hide the bottom-left rate-limit badge and reflow the window.
 
         `anthropic-ratelimit-unified-5h-status` is `allowed` / `allowed_warning`
@@ -1615,9 +1623,18 @@ class Dashboard(QMainWindow):
         container is hidden when there's nothing to say so the WEEKLY bar
         sits tight against the bottom; minimum window height grows by the
         badge row's footprint when it appears.
+
+        When `is_error` is set, `status` is a failure message from a bad probe
+        (e.g. "Token rejected (401)") and is surfaced verbatim so the user sees
+        why the bars are empty instead of a silent blank.
         """
         s = (status or "").lower()
-        if "reject" in s or "block" in s:
+        if is_error:
+            self.status_text.setText(status or "Error")
+            self.status_icon.setText("⚠️")
+            self.status_text.setProperty("level", "block")
+            has_badge = True
+        elif "reject" in s or "block" in s:
             self.status_text.setText("Limit reached")
             self.status_icon.setText("❌")
             self.status_text.setProperty("level", "block")
