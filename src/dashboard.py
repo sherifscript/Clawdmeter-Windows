@@ -345,6 +345,8 @@ class CompactWidget(QWidget):
 
     # Qt's QWIDGETSIZE_MAX — the "no constraint" sentinel for max size.
     _SIZE_MAX = 16777215
+    # Horizontal breathing room so high-DPI rounding can't clip the reset text.
+    _WIDTH_SLACK_PX = 8
 
     def lock_size(self) -> None:
         """Pin the window to its current content size as a hard cap.
@@ -353,11 +355,19 @@ class CompactWidget(QWidget):
         geometry glitch tries to resize the window, min == max blocks it, so it
         can't balloon across monitors. Recomputed on every content change so a
         longer "resets in ..." string is never clipped.
+
+        Locks to sizeHint() (not size()): adjustSize() on a visible top-level
+        window doesn't update size() synchronously, so reading it back pinned a
+        stale, narrower width and clipped the trailing "m"/"h" of the reset text.
+        A few px of horizontal slack is added on top: sizeHint() comes out exactly
+        text-tight, so at fractional/200% scaling rounding would otherwise shave
+        the last glyph. The trailing stretch in each row soaks up the slack.
         """
         self.setMinimumSize(0, 0)
         self.setMaximumSize(self._SIZE_MAX, self._SIZE_MAX)
-        self.adjustSize()
-        self.setFixedSize(self.size())
+        self.layout().activate()
+        hint = self.sizeHint()
+        self.setFixedSize(hint.width() + self._WIDTH_SLACK_PX, hint.height())
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
