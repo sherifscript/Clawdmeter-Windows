@@ -1,0 +1,52 @@
+name: Build & Release
+
+# Builds the single-file Windows .exe with PyInstaller (mirrors build.ps1).
+#
+#  * Push a version tag (e.g. v1.3.2)  -> builds and publishes a GitHub Release
+#                                         with dist/Clawdmeter.exe attached.
+#  * Push to main / open a PR / manual -> builds and uploads the .exe as a
+#                                         workflow artifact (no release), so the
+#                                         build is verified on every change.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create the Release on tag builds
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.20.0
+
+      - name: Build Clawdmeter.exe
+        run: pyinstaller --clean Clawdmeter.spec
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clawdmeter-exe
+          path: dist/Clawdmeter.exe
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Clawdmeter.exe
+          generate_release_notes: true
