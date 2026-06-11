@@ -558,7 +558,7 @@ class TitleBar(QWidget):
         self.setMinimumHeight(0)
         self.setMaximumHeight(self.HEIGHT)
         self._win = window
-        self._drag_offset: QPoint | None = None
+        self._press_pos: QPoint | None = None
 
         row = QHBoxLayout(self)
         row.setContentsMargins(8, 0, 0, 0)
@@ -623,23 +623,33 @@ class TitleBar(QWidget):
 
     def mousePressEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
-            self._drag_offset = e.globalPosition().toPoint() - self._win.frameGeometry().topLeft()
+            self._press_pos = e.globalPosition().toPoint()
             e.accept()
 
     def mouseMoveEvent(self, e) -> None:
-        if not (e.buttons() & Qt.LeftButton) or self._drag_offset is None:
+        # Once past the drag threshold, hand the move to Windows' native move
+        # loop rather than repositioning the window ourselves every step. The
+        # manual self._win.move() approach made Qt recompute the window geometry
+        # on each step, which ballooned the frameless window when it was dragged
+        # onto a higher-DPI monitor. The native loop is DPI-aware and avoids it.
+        # Under the threshold we do nothing so double-click-to-maximize still
+        # registers.
+        if not (e.buttons() & Qt.LeftButton) or self._press_pos is None:
             return
+        moved = (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
+        if moved < QApplication.startDragDistance():
+            return
+        self._press_pos = None
         if self._win.isMaximized():
-            # Restore on drag, like Windows: re-anchor cursor proportionally.
+            # Restore before the handoff so the window follows the cursor at
+            # its normal size, like Windows' own maximized title-bar drag.
             self._win.showNormal()
             self.max_btn.setText("")  # ChromeMaximize
-            geo = self._win.frameGeometry()
-            self._drag_offset = QPoint(geo.width() // 2, self.HEIGHT // 2)
-        self._win.move(e.globalPosition().toPoint() - self._drag_offset)
+        winutil.start_native_move(int(self._win.winId()))
         e.accept()
 
     def mouseReleaseEvent(self, e) -> None:
-        self._drag_offset = None
+        self._press_pos = None
 
     def mouseDoubleClickEvent(self, e) -> None:
         if e.button() == Qt.LeftButton:
